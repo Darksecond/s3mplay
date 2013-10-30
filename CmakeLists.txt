@@ -1,0 +1,22 @@
+cmake_minimum_required (VERSION 2.6)
+
+set (CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake_modules/")
+
+project (s3mplay)
+set (s3mplay_VERSION_MAJOR 0)
+set (s3mplay_VERSION_MINOR 1)
+
+if (UNIX)
+	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+endif ()
+if (APPLE)
+	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+endif ()
+
+add_executable (s3mplay
+	s3mplay.cc
+	)
+
+find_package (SDL2 REQUIRED)
+include_directories (${SDL2_INCLUDE_DIR})
+target_link_libraries (s3mplay ${SDL2_LIBRARY})
