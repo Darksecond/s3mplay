@@ -392,7 +392,7 @@ struct S3MPlayer {
 				double sound = 0;
 				for(int c=0;c<32;++c) {
 					if(channels[c].active) {
-						sound += resample(channels[c])/2;
+						sound += resample(channels[c])   /2; //devide by 2 is a HACK, HACK!
 					}
 				}
 				buffer[offset+i] = sound;
