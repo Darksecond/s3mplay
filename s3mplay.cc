@@ -149,6 +149,11 @@ struct S3MFile {
 
 					printf("%02X", infobyte);
 				}
+
+				int base_note() {
+					return (note>>4)*12 + (note&0x0F);
+				}
+
 			} slots[32]; //maximum 32 channels, so a maximum of 32 slots per row
 
 			int num_slots;
@@ -173,6 +178,14 @@ struct S3MFile {
 					slots[i].print();
 				}
 				printf("|\n");
+			}
+
+			Slot* begin() {
+				return slots;
+			}
+
+			Slot* end() {
+				return slots + num_slots;
 			}
 		} rows[64]; //there are always 64 rows in a pattern
 
@@ -251,6 +264,20 @@ struct S3MPlayer {
 	int order; //current order
 	int pattern; //current pattern
 
+	struct Channel {
+		bool active;
+		int instrument;
+		int base_note;
+		double period;
+		double sample_offset;
+
+		S3MFile::Pattern::Row::Slot current_slot;
+		int current_instrument;
+
+		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0) {
+		}
+	} channels[32];
+
 	S3MPlayer() : s3m(nullptr), sample_rate(0) {
 	}
 
@@ -283,10 +310,43 @@ struct S3MPlayer {
 		return s3m->patterns[pattern].rows[row];
 	}
 
+	double resample(Channel& channel) {
+		double sampler_add = (14317056.0 / sample_rate) / channel.period;
+		auto& ins = s3m->instruments[channel.instrument];
+
+		if(channel.sample_offset >= ins.header.length) {
+			channel.active = false;
+			return 0;
+		}
+
+		double sample = ins.sample_data[(unsigned)channel.sample_offset] - 128.0; 
+		channel.sample_offset += sampler_add;
+		if((ins.header.flags & 1) && channel.sample_offset >= ins.header.loop_end) /* loop? */
+			channel.sample_offset = ins.header.loop_begin + fmod(channel.sample_offset - ins.header.loop_begin, ins.header.loop_end - ins.header.loop_begin);
+
+		return sample/128.0;
+	}
+
 	void update_row() {
 		printf("O%02uP%02uR%02u ",order,pattern,row);
 		current_row().print();
-		//channel_row(channel, row.slots[channelnr]); //adapt channel to new row (execute commands, change note, etc)
+		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
+			Channel& channel = channels[slot.channel];
+
+			if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
+				if(slot.note != 255 && slot.note != 254) {
+					channel.base_note = slot.base_note();
+					channel.active = true;
+					channel.sample_offset = 0;
+				}
+				if(slot.instrument) {
+					channel.instrument = slot.instrument-1;
+				}
+
+				const int c4spd = s3m->instruments[channel.current_instrument].header.c4spd;
+				channel.period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
+			}
+		}
 	}
 
 	void tick_row() {
@@ -328,6 +388,15 @@ struct S3MPlayer {
 				tick();
 				tick_offset = 0;
 			}
+			for(int i=0;i<remain;++i) {
+				double sound = 0;
+				for(int c=0;c<32;++c) {
+					if(channels[c].active) {
+						sound += resample(channels[c])/2;
+					}
+				}
+				buffer[offset+i] = sound;
+			}
 			offset += remain;
 			samples -= remain;
 		}
@@ -337,24 +406,10 @@ struct S3MPlayer {
 static S3MFile s3m;
 static S3MPlayer player;
 
-void audio_callback(void*, Uint8*, int);
-int main(int argc, char* argv[]);
-void play_audio();
-
 void audio_callback(void*, Uint8* s, int len) {
 	float* stream = (float*)s;
 	len = len/sizeof(float);
-
 	player.synth(stream, len);
-
-	/*
-	static float phase;
-	for(int i =0; i < len; ++i) {
-		phase += 2.0f * M_PI * (440.0f/44100.0f);
-		phase = fmod(phase, 2*M_PI);
-		stream[i] = sinf(phase);
-	}
-	*/
 }
 
 void play_audio() {
