@@ -237,62 +237,79 @@ struct S3MFile {
 
 		fclose(fp);
 	}
+};
 
-	//TODO Create 'Player', or 'S3MPlayer' class/struct with most, if not all, of this stuff in it.
-	struct {
-		uint8_t speed; //Axx //number of ticks in a raw
-		uint8_t tempo; //Txx //in BPM
-		int sample_rate; //sample rate in Hz (for example: 44100Hz)
-		int tick_len; //number of samples (at sample_rate) in a tick
-		int tick;
-		int tick_offset; //how far in a tick are we?
+struct S3MPlayer {
+	S3MFile* s3m;
+	int sample_rate; //Sample rate in Hz
+	int tick_length; //length of a tick in samples
+	int tick_offset; //offset into the current row, in samples
+	int tempo; //tempo in BPM
+	int speed; //amount of ticks in a row
+	int current_tick; //amount of ticks into a row (offset);
+	int row; //current row
+	int order; //current order
+	int pattern; //current pattern
 
-		int row;
-		int pattern;
-		int order;
-	} state;
+	S3MPlayer() : s3m(nullptr), sample_rate(0) {
+	}
 
-	void prepare(int sr) {
-		state.sample_rate = sr;
-		state.speed = header.initial_speed;
-		state.tempo = header.initial_tempo;
-		state.tick_len = 2.5 * state.sample_rate / state.tempo;
-		state.tick_offset = 0;
-		state.tick = state.speed;
-		state.row = 0;
-		state.order = 0;
-		state.pattern = orders[state.order];
+	void set_sample_rate(int sr) {
+		sample_rate = sr;
+	}
 
-		update_row();
+	void load(S3MFile* file) {
+		s3m = file;
+		reset();
+	}
+
+	void reset() {
+		assert(s3m);
+		assert(sample_rate);
+
+		tempo = s3m->header.initial_tempo;
+		speed = s3m->header.initial_speed;
+
+		tick_offset = 0;
+		current_tick = 0;
+		row = 0;
+		order = 0;
+
+		tick_length = 2.5 * sample_rate / tempo;
+		pattern = s3m->orders[order];
+	}
+
+	S3MFile::Pattern::Row& current_row() {
+		return s3m->patterns[pattern].rows[row];
 	}
 
 	void update_row() {
-		auto& row = patterns[state.pattern].rows[state.row];
-		printf("O%02uP%02uR%02u ",state.order,state.pattern,state.row);
-		row.print();
-		//channel_row(channel, row.slots[channelnr]); //adapt channel to new row
+		printf("O%02uP%02uR%02u ",order,pattern,row);
+		current_row().print();
+		//channel_row(channel, row.slots[channelnr]); //adapt channel to new row (execute commands, change note, etc)
 	}
 
 	void tick_row() {
-		++state.row;
-		if(state.row >= 64) {
-			state.row = 0;
-			++state.order;
+		update_row();
+		
+		++row;
+		if(row >= 64) {
+			row = 0;
+			++order;
 
 			//Find a valid order
-			while(orders[state.order] == 254 || orders[state.order] == 255) { //255==end-of-song, 254==marker
-				++state.order;
-				if(state.order >= header.num_orders) state.order = 0;
+			while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
+				++order;
+				if(order >= s3m->header.num_orders) order = 0;
 			}
-			state.pattern = orders[state.order];
+			pattern = s3m->orders[order];
 		}
-		update_row();
 	}
 
 	void tick() {
-		--state.tick;
-		if(state.tick <= 0) {
-			state.tick = state.speed;
+		--current_tick;
+		if(current_tick <= 0) {
+			current_tick = speed;
 			tick_row(); //next row
 		} else {
 			//channel_tick(channel); //tick channel, for effects that work per tick, for example
@@ -302,23 +319,23 @@ struct S3MFile {
 	void synth(float* buffer, int samples) {
 		for(int i=0;i<samples;++i){buffer[i]=0;}
 
-		int offset = 0; //how far into the buffer are we? i.e. how many samples have we generated so far?
-		while(samples > 0) { //Still have samples to generate
-			int remain = state.tick_len - state.tick_offset;
+		int offset = 0;
+		while(samples > 0) {
+			int remain = tick_length - tick_offset;
 			if(remain > samples) remain = samples;
-			state.tick_offset += remain;
-			if(state.tick_offset == state.tick_len) {
+			tick_offset += remain;
+			if(tick_offset == tick_length) {
 				tick();
-				state.tick_offset = 0;
+				tick_offset = 0;
 			}
 			offset += remain;
 			samples -= remain;
-			//resample(...)
 		}
 	}
 };
 
 static S3MFile s3m;
+static S3MPlayer player;
 
 void audio_callback(void*, Uint8*, int);
 int main(int argc, char* argv[]);
@@ -328,7 +345,7 @@ void audio_callback(void*, Uint8* s, int len) {
 	float* stream = (float*)s;
 	len = len/sizeof(float);
 
-	s3m.synth(stream, len);
+	player.synth(stream, len);
 
 	/*
 	static float phase;
@@ -354,16 +371,17 @@ void play_audio() {
 
 	SDL_PauseAudioDevice(dev, 0);
 	SDL_Delay(120000);
-	printf("done\n");
 	SDL_CloseAudioDevice(dev);
 }
 
 int main(int argc, char* argv[]) {
 	SDL_Init(SDL_INIT_AUDIO);
+	player.set_sample_rate(44100);
 	s3m.load("../SATELL.S3M");
 	//s3m.load("../aryx.s3m");
+	player.load(&s3m);
 	printf("playing\n");
-	s3m.prepare(44100);
 	play_audio();
+	printf("done\n");
 	return 0;
 }
