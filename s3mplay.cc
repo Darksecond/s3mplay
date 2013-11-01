@@ -277,8 +277,13 @@ struct S3MPlayer {
 		double period;
 		double sample_offset;
 		int volume;
+		int note_on;
+		int note_off;
+		int volume_slide;
+		int last_volume_slide;
 
-		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0), volume(0) {
+		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0), volume(0), note_on(0), note_off(999)
+			    , volume_slide(0), last_volume_slide(0) {
 		}
 	} channels[32];
 
@@ -309,7 +314,7 @@ struct S3MPlayer {
 
 		finished = 0;
 		tick_offset = 0;
-		current_tick = 0;
+		current_tick = speed;
 		row = 0;
 		order = 0;
 
@@ -337,11 +342,45 @@ struct S3MPlayer {
 		return sample/128.0;
 	}
 
+	void note_on(S3MFile::Pattern::Row::Slot& slot) {
+		Channel& channel = channels[slot.channel];
+		if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
+			if(slot.note != 255 && slot.note != 254) {
+				channel.base_note = slot.base_note();
+				channel.active = true;
+				channel.sample_offset = 0;
+			}
+			if(slot.instrument) {
+				channel.instrument = slot.instrument-1;
+			}
+			if(slot.volume == 255 && slot.instrument)
+				channel.volume = s3m->instruments[channel.instrument].header.volume;
+
+			const int c4spd = s3m->instruments[channel.instrument].header.c4spd;
+			channel.period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
+		}
+		if(slot.volume != 255) {
+			channel.volume = slot.volume;
+		}
+	}
+
+	void volume_slide(Channel& channel) {
+		//volume slide
+		channel.volume += channel.volume_slide;
+		if(channel.volume < 0)
+			channel.volume = 0;
+		if(channel.volume > 64)
+			channel.volume = 64;
+	}
+
 	void update_row() {
 		printf("O%02uP%02uR%02u ",order,pattern,row);
 		current_row().print();
 		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
 			Channel& channel = channels[slot.channel];
+			channel.note_on = 0;
+			channel.note_off = 999;
+			channel.volume_slide = 0;
 
 			switch(slot.command+64) {
 				case 'A': //Axx, Set speed
@@ -353,25 +392,34 @@ struct S3MPlayer {
 				case 'V': //Vxx, Set global volume
 					global_volume = slot.infobyte;
 					break;
+				case 'O': //Oxx, Set sample offset
+					channel.sample_offset = slot.infobyte * 0x100;
+					break;
+				case 'D': //Dxy, Volume slide
+					if(slot.infobyte) { //xy != 0x00
+						int x = (slot.infobyte & 0xF0)>>4;
+						int y = slot.infobyte & 0x0F;
+						if(x>0)
+							channel.last_volume_slide = x;
+						else if(y>0)
+							channel.last_volume_slide = -y;
+					}
+					channel.volume_slide = channel.last_volume_slide;
+					break;
+				case 'S': //Special
+					switch(slot.infobyte & 0xF0)
+					{
+						case '0xC0': //Notecut
+							channel.note_off = slot.infobyte & 0x0F;
+							break;
+						case '0xD0': //Notedelay
+							channel.note_on = slot.infobyte & 0x0F;
+							break;
+					}
+					break;
 			}
-			if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
-				if(slot.note != 255 && slot.note != 254) {
-					channel.base_note = slot.base_note();
-					channel.active = true;
-					channel.sample_offset = 0;
-				}
-				if(slot.instrument) {
-					channel.instrument = slot.instrument-1;
-				}
-				if(slot.volume == 255 && slot.instrument)
-					channel.volume = s3m->instruments[channel.instrument].header.volume;
-
-				const int c4spd = s3m->instruments[channel.instrument].header.c4spd;
-				channel.period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
-			}
-			if(slot.volume != 255) {
-				channel.volume = slot.volume;
-			}
+			if(channel.note_on == current_tick) note_on(slot);
+			if((s3m->header.version == 0x1300) || (s3m->header.flags & 0x40)) volume_slide(channel);
 		}
 	}
 
@@ -395,13 +443,24 @@ struct S3MPlayer {
 		}
 	}
 
+	void channel_tick() {
+		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
+			Channel& channel = channels[slot.channel];
+			if(channel.note_on == current_tick) note_on(slot);
+			if(channel.note_off == current_tick) channel.active = false;
+
+			//volume slide
+			volume_slide(channel);
+		}
+	}
+
 	void tick() {
-		--current_tick;
-		if(current_tick <= 0) {
-			current_tick = speed;
+		++current_tick;
+		if(current_tick >= speed) {
+			current_tick = 0;
 			tick_row(); //next row
 		} else {
-			//channel_tick(channel); //tick channel, for effects that work per tick, for example
+			channel_tick();
 		}
 	}
 
