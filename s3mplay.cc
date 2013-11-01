@@ -270,20 +270,27 @@ struct S3MPlayer {
 	int order; //current order
 	int pattern; //current pattern
 
+	int pattern_jump; //part of Bxx command
+
 	struct Channel {
 		bool active;
 		int instrument;
 		int base_note;
 		double period;
+		double slide_period; //period to slide to
 		double sample_offset;
 		int volume;
 		int note_on;
 		int note_off;
+
 		int volume_slide;
 		int last_volume_slide;
 
-		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0), volume(0), note_on(0), note_off(999)
-			    , volume_slide(0), last_volume_slide(0) {
+		int portamento;
+		int last_portamento;
+
+		Channel() : active(false), instrument(0), base_note(-1), period(0), slide_period(0), sample_offset(0), volume(64), note_on(0), note_off(999)
+			    , volume_slide(0), last_volume_slide(0), portamento(0), last_portamento(0) {
 		}
 	} channels[32];
 
@@ -317,6 +324,7 @@ struct S3MPlayer {
 		current_tick = speed;
 		row = 0;
 		order = 0;
+		pattern_jump = 0;
 
 		pattern = s3m->orders[order];
 	}
@@ -357,11 +365,14 @@ struct S3MPlayer {
 				channel.volume = s3m->instruments[channel.instrument].header.volume;
 
 			const int c4spd = s3m->instruments[channel.instrument].header.c4spd;
-			channel.period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
+			channel.slide_period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
 		}
 		if(slot.volume != 255) {
 			channel.volume = slot.volume;
 		}
+
+		if(!channel.portamento)
+			channel.period = channel.slide_period;
 	}
 
 	void volume_slide(Channel& channel) {
@@ -373,6 +384,21 @@ struct S3MPlayer {
 			channel.volume = 64;
 	}
 
+	void portamento(Channel& channel) {
+		//portamento
+		if(channel.portamento) {
+			if(channel.period < channel.slide_period) {
+				channel.period += channel.portamento;
+				if(channel.period > channel.slide_period)
+					channel.period = channel.slide_period;
+			} else if(channel.period > channel.slide_period) {
+				channel.period -= channel.portamento;
+				if(channel.period < channel.slide_period)
+					channel.period = channel.slide_period;
+			}
+		}
+	}
+
 	void update_row() {
 		printf("O%02uP%02uR%02u ",order,pattern,row);
 		current_row().print();
@@ -381,10 +407,21 @@ struct S3MPlayer {
 			channel.note_on = 0;
 			channel.note_off = 999;
 			channel.volume_slide = 0;
+			channel.portamento = 0;
 
 			switch(slot.command+64) {
 				case 'A': //Axx, Set speed
 					speed = slot.infobyte;
+					break;
+				case 'B': //Bxx, Pattern Jump
+					pattern_jump = slot.infobyte;
+					row = 0;
+					break;
+				case 'C': //Cxx, Pattern break
+					if(!pattern_jump) {
+						pattern_jump = order + 1;
+					}
+					row = (slot.infobyte >> 4)*10 + (slot.infobyte & 15);
 					break;
 				case 'T': //Txx, Set tempo
 					set_tempo(slot.infobyte);
@@ -394,6 +431,12 @@ struct S3MPlayer {
 					break;
 				case 'O': //Oxx, Set sample offset
 					channel.sample_offset = slot.infobyte * 0x100;
+					break;
+				case 'G': //Gxx, Tone portamento
+					if(slot.infobyte) {
+						channel.last_portamento = slot.infobyte * 4;
+					}
+					channel.portamento = channel.last_portamento;
 					break;
 				case 'D': //Dxy, Volume slide
 					if(slot.infobyte) { //xy != 0x00
@@ -406,6 +449,12 @@ struct S3MPlayer {
 					}
 					channel.volume_slide = channel.last_volume_slide;
 					break;
+				case 'E': //Exy, Portamento down
+					//TODO
+					break;
+				case 'F': //Fxy, Portamento up
+					//TODO
+					break;
 				case 'S': //Special
 					switch(slot.infobyte & 0xF0)
 					{
@@ -415,31 +464,70 @@ struct S3MPlayer {
 						case '0xD0': //Notedelay
 							channel.note_on = slot.infobyte & 0x0F;
 							break;
+						case '0xE0': //Patterndelay
+							current_tick = -slot.infobyte * speed;
+							break;
 					}
 					break;
 			}
+
 			if(channel.note_on == current_tick) note_on(slot);
 			if((s3m->header.version == 0x1300) || (s3m->header.flags & 0x40)) volume_slide(channel);
 		}
 	}
 
+	bool set_order(int new_order) {
+		bool done = false;
+		order = new_order;
+		while(s3m->orders[order] == 254 || s3m->orders[order] == 255) {
+			if(s3m->orders[order] == 255) done = true;
+			++order;
+			if(order >= s3m->header.num_orders) {
+				order = 0;
+				done = true;
+			}
+		}
+		pattern = s3m->orders[order];
+		return done;
+	}
+
 	void tick_row() {
 		update_row();
 		
-		++row;
-		if(row >= 64) {
-			row = 0;
-			++order;
+		if(pattern_jump) {
+			set_order(pattern_jump) ? set_order(0) : 0;
+			pattern_jump = 0;
 
-			//Find a valid order
+			/*
+			order = pattern_jump;
 			while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
 				++order;
 				if(order >= s3m->header.num_orders) {
 					order = 0;
-					++finished;
 				}
 			}
 			pattern = s3m->orders[order];
+			pattern_jump = 0;
+			*/
+		} else {
+			++row;
+			if(row >= 64) {
+				row = 0;
+				++order;
+				set_order(order) ? ++finished : 0;
+
+				/*
+				//Find a valid order
+				while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
+					++order;
+					if(order >= s3m->header.num_orders) {
+						order = 0;
+						++finished;
+					}
+				}
+				pattern = s3m->orders[order];
+				*/
+			}
 		}
 	}
 
@@ -449,8 +537,8 @@ struct S3MPlayer {
 			if(channel.note_on == current_tick) note_on(slot);
 			if(channel.note_off == current_tick) channel.active = false;
 
-			//volume slide
 			volume_slide(channel);
+			portamento(channel);
 		}
 	}
 
@@ -532,7 +620,13 @@ int main(int argc, char* argv[]) {
 	//s3m.load("../aryx.s3m");
 	//s3m.load("../2ND_PM.S3M");
 	//s3m.load("../pod.s3m");
-	s3m.load("../CTGOBLIN.S3M");
+	//s3m.load("../CTGOBLIN.S3M");
+	//s3m.load("../ascent.s3m");
+	//s3m.load("../MECH8.S3M");
+	//s3m.load("../A94FINAL.S3M");
+	//s3m.load("../CLICK.S3M");
+	//s3m.load("../2nd_reality.s3m");
+	s3m.load("../backwards-sdrawkcab.s3m");
 
 	player.load(&s3m);
 	player.print();
