@@ -497,36 +497,13 @@ struct S3MPlayer {
 		if(pattern_jump) {
 			set_order(pattern_jump) ? set_order(0) : 0;
 			pattern_jump = 0;
-
-			/*
-			order = pattern_jump;
-			while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
-				++order;
-				if(order >= s3m->header.num_orders) {
-					order = 0;
-				}
-			}
-			pattern = s3m->orders[order];
-			pattern_jump = 0;
-			*/
 		} else {
 			++row;
 			if(row >= 64) {
 				row = 0;
 				++order;
-				set_order(order) ? ++finished : 0;
-
-				/*
-				//Find a valid order
-				while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
-					++order;
-					if(order >= s3m->header.num_orders) {
-						order = 0;
-						++finished;
-					}
-				}
-				pattern = s3m->orders[order];
-				*/
+				if(set_order(order))
+					++finished;
 			}
 		}
 	}
@@ -616,7 +593,7 @@ int main(int argc, char* argv[]) {
 	SDL_Init(SDL_INIT_AUDIO);
 	player.set_sample_rate(44100);
 
-	//s3m.load("../SATELL.S3M");
+	s3m.load("../SATELL.S3M");
 	//s3m.load("../aryx.s3m");
 	//s3m.load("../2ND_PM.S3M");
 	//s3m.load("../pod.s3m");
@@ -626,7 +603,7 @@ int main(int argc, char* argv[]) {
 	//s3m.load("../A94FINAL.S3M");
 	//s3m.load("../CLICK.S3M");
 	//s3m.load("../2nd_reality.s3m");
-	s3m.load("../backwards-sdrawkcab.s3m");
+	//s3m.load("../backwards-sdrawkcab.s3m");
 
 	player.load(&s3m);
 	player.print();
