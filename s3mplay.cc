@@ -431,6 +431,11 @@ struct S3MPlayer {
 			samples -= remain;
 		}
 	}
+
+	void print() {
+		printf("Song: %s\n",s3m->header.name);
+		printf("\n");
+	}
 };
 
 static S3MFile s3m;
@@ -471,8 +476,7 @@ int main(int argc, char* argv[]) {
 	s3m.load("../CTGOBLIN.S3M");
 
 	player.load(&s3m);
-	printf("playing\n");
+	player.print();
 	play_audio();
-	printf("done\n");
 	return 0;
 }
