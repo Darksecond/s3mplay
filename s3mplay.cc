@@ -3,6 +3,7 @@
 #include <cmath>
 #include <stdio.h>
 #include <cassert>
+#include <atomic>
 
 struct S3MFile {
 	struct {
@@ -171,7 +172,10 @@ struct S3MFile {
 			}
 
 			void print() {
-				if(num_slots == 0) return;
+				if(num_slots == 0) {
+					printf("\n");
+					return;
+				}
 
 				for(int i=0;i<num_slots;++i) {
 					printf("|");
@@ -253,12 +257,14 @@ struct S3MFile {
 };
 
 struct S3MPlayer {
-	S3MFile* s3m;
+	S3MFile* s3m; //s3m file to play
+	std::atomic<int> finished; //how many times has player looped through the song? i.e. 0==not done playing yet, >0==done playing, at least once
 	int sample_rate; //Sample rate in Hz
 	int tick_length; //length of a tick in samples
 	int tick_offset; //offset into the current row, in samples
 	int tempo; //tempo in BPM
 	int speed; //amount of ticks in a row
+	int global_volume; //Vxx
 	int current_tick; //amount of ticks into a row (offset);
 	int row; //current row
 	int order; //current order
@@ -270,11 +276,9 @@ struct S3MPlayer {
 		int base_note;
 		double period;
 		double sample_offset;
+		int volume;
 
-		S3MFile::Pattern::Row::Slot current_slot;
-		int current_instrument;
-
-		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0) {
+		Channel() : active(false), instrument(0), base_note(-1), period(0), sample_offset(0), volume(0) {
 		}
 	} channels[32];
 
@@ -290,19 +294,25 @@ struct S3MPlayer {
 		reset();
 	}
 
+	void set_tempo(int new_tempo) {
+		tempo = new_tempo;
+		tick_length = 2.5 * sample_rate / tempo;
+	}
+
 	void reset() {
 		assert(s3m);
 		assert(sample_rate);
 
-		tempo = s3m->header.initial_tempo;
+		set_tempo(s3m->header.initial_tempo);
 		speed = s3m->header.initial_speed;
+		global_volume = s3m->header.global_volume;
 
+		finished = 0;
 		tick_offset = 0;
 		current_tick = 0;
 		row = 0;
 		order = 0;
 
-		tick_length = 2.5 * sample_rate / tempo;
 		pattern = s3m->orders[order];
 	}
 
@@ -333,6 +343,17 @@ struct S3MPlayer {
 		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
 			Channel& channel = channels[slot.channel];
 
+			switch(slot.command+64) {
+				case 'A': //Axx, Set speed
+					speed = slot.infobyte;
+					break;
+				case 'T': //Txx, Set tempo
+					set_tempo(slot.infobyte);
+					break;
+				case 'V': //Vxx, Set global volume
+					global_volume = slot.infobyte;
+					break;
+			}
 			if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
 				if(slot.note != 255 && slot.note != 254) {
 					channel.base_note = slot.base_note();
@@ -342,9 +363,14 @@ struct S3MPlayer {
 				if(slot.instrument) {
 					channel.instrument = slot.instrument-1;
 				}
+				if(slot.volume == 255 && slot.instrument)
+					channel.volume = s3m->instruments[channel.instrument].header.volume;
 
-				const int c4spd = s3m->instruments[channel.current_instrument].header.c4spd;
+				const int c4spd = s3m->instruments[channel.instrument].header.c4spd;
 				channel.period = 8362*16*1712/pow(2,(channel.base_note/12.0)) / c4spd;
+			}
+			if(slot.volume != 255) {
+				channel.volume = slot.volume;
 			}
 		}
 	}
@@ -360,7 +386,10 @@ struct S3MPlayer {
 			//Find a valid order
 			while(s3m->orders[order] == 254 || s3m->orders[order] == 255) { //255==end-of-song, 254==marker
 				++order;
-				if(order >= s3m->header.num_orders) order = 0;
+				if(order >= s3m->header.num_orders) {
+					order = 0;
+					++finished;
+				}
 			}
 			pattern = s3m->orders[order];
 		}
@@ -392,9 +421,10 @@ struct S3MPlayer {
 				double sound = 0;
 				for(int c=0;c<32;++c) {
 					if(channels[c].active) {
-						sound += resample(channels[c])   /2; //devide by 2 is a HACK, HACK!
+						sound += channels[c].volume * resample(channels[c]);
 					}
 				}
+				sound *= (s3m->header.master_volume & 127) * global_volume / (64.0*512.0*32.0); //32 channels, 512 == 2^7*2^8/64
 				buffer[offset+i] = sound;
 			}
 			offset += remain;
@@ -425,15 +455,21 @@ void play_audio() {
 	assert(dev);
 
 	SDL_PauseAudioDevice(dev, 0);
-	SDL_Delay(120000);
+	while(!player.finished)
+		SDL_Delay(1);
 	SDL_CloseAudioDevice(dev);
 }
 
 int main(int argc, char* argv[]) {
 	SDL_Init(SDL_INIT_AUDIO);
 	player.set_sample_rate(44100);
-	s3m.load("../SATELL.S3M");
+
+	//s3m.load("../SATELL.S3M");
 	//s3m.load("../aryx.s3m");
+	//s3m.load("../2ND_PM.S3M");
+	//s3m.load("../pod.s3m");
+	s3m.load("../CTGOBLIN.S3M");
+
 	player.load(&s3m);
 	printf("playing\n");
 	play_audio();
