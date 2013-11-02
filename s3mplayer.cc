@@ -1,16 +1,15 @@
 #include "s3mplayer.h"
 
-//TODO Proper end-of-song detection
 bool S3M::Cursor::set_order(const int new_order, const S3M::File *s3m) {
 	bool done = false;
-	//if(new_order <= order) done = true; //is an option
+	if(new_order <= order) done = true;
 	order = new_order;
 	while(s3m->orders[order] == 254 || s3m->orders[order] == 255 || order >= s3m->header.num_orders) {
-		if(s3m->orders[order] == 255) done = true; //another option
+		if(s3m->orders[order] == 255) done = true;
 		++order;
 		if(order >= s3m->header.num_orders) {
 			order = 0;
-			done = true; //another option
+			done = true;
 		}
 	}
 	pattern = s3m->orders[order];

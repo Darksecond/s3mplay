@@ -161,9 +161,10 @@ void S3M::File::load(const char* filename) {
 	if(header.default_panning == 0xFC) {
 		uint8_t pan[32];
 		fread(pan, sizeof(uint8_t), 32, fp);
+
 		for(int i=0;i<32;++i) {
 			if(pan[i] & 0x20) { //pan specified
-				panning[i] = (pan[i] & 0x0F) / 16.0;
+				panning[i] = (pan[i] & 0x0F) / 15.0;
 			}
 		}
 	}

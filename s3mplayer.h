@@ -16,8 +16,11 @@ namespace S3M {
 		int order;
 		int pattern;
 	public:
+		bool operator< (const Cursor& other) {
+			if(order == invalid) return false;
+			return order < other.order;
+		}
 
-		//TODO Proper end-of-song detection
 		bool set_order(const int new_order, const File *s3m);
 
 		inline bool next_order(const Cursor& cursor, const File *s3m) {
@@ -212,7 +215,7 @@ namespace S3M {
 						switch(slot.infobyte & 0xF0)
 						{
 							case '0x80': //S8x, Pan position
-								channel.pan = (slot.infobyte & 0x0F) / 16.0;
+								channel.pan = (slot.infobyte & 0x0F) / 15.0;
 								break;
 							case '0xC0': //Notecut
 								channel.note_off = slot.infobyte & 0x0F;
@@ -225,6 +228,9 @@ namespace S3M {
 								break;
 						}
 						break;
+					case 'X': //Xxx, Set panning
+						channel.pan = slot.infobyte / 128.0;
+						break;
 				}
 
 				if(channel.note_on == current_tick) note_on(slot);
@@ -232,10 +238,11 @@ namespace S3M {
 			}
 		}
 
-		//TODO end-of-song detection in pattern jump
 		inline void tick_row() {
 			update_row();
 
+			//TODO Add flag to enable looping and jumping backwards
+			if(jump_cursor < cursor) ++finished;
 			if(cursor.apply(jump_cursor)) {
 				jump_cursor.invalidate();
 			} else {
@@ -372,15 +379,18 @@ namespace S3M {
 			printf("\n");
 			*/
 
+			/*
 			printf("Pans: |");
 			for(int i=0;i<32;++i) {
 				printf("%.02f|",s3m->panning[i]);
 			}
 			printf("\n");
+			*/
 
+			/*
 			printf("Master volume: %i",s3m->header.master_volume);
-
 			printf("\n");
+			*/
 		}
 
 		bool is_finished() const {
