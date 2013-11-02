@@ -289,8 +289,10 @@ struct S3MPlayer {
 		int portamento;
 		int last_portamento;
 
+		int new_sample_offset;
+
 		Channel() : active(false), instrument(0), base_note(-1), period(0), slide_period(0), sample_offset(0), volume(64), note_on(0), note_off(999)
-			    , volume_slide(0), last_volume_slide(0), portamento(0), last_portamento(0) {
+			    , volume_slide(0), last_volume_slide(0), portamento(0), last_portamento(0), new_sample_offset(0) {
 		}
 	} channels[32];
 
@@ -356,7 +358,7 @@ struct S3MPlayer {
 			if(slot.note != 255 && slot.note != 254) {
 				channel.base_note = slot.base_note();
 				channel.active = true;
-				channel.sample_offset = 0;
+				channel.sample_offset = channel.new_sample_offset;
 			}
 			if(slot.instrument) {
 				channel.instrument = slot.instrument-1;
@@ -408,6 +410,7 @@ struct S3MPlayer {
 			channel.note_off = 999;
 			channel.volume_slide = 0;
 			channel.portamento = 0;
+			channel.new_sample_offset = 0;
 
 			switch(slot.command+64) {
 				case 'A': //Axx, Set speed
@@ -430,7 +433,7 @@ struct S3MPlayer {
 					global_volume = slot.infobyte;
 					break;
 				case 'O': //Oxx, Set sample offset
-					channel.sample_offset = slot.infobyte * 0x100;
+					channel.new_sample_offset = slot.infobyte * 0x100;
 					break;
 				case 'G': //Gxx, Tone portamento
 					if(slot.infobyte) {
@@ -476,10 +479,12 @@ struct S3MPlayer {
 		}
 	}
 
+	//TODO Proper end-of-song detection
 	bool set_order(int new_order) {
 		bool done = false;
+		//if(new_order <= order) done = true; //is an option
 		order = new_order;
-		while(s3m->orders[order] == 254 || s3m->orders[order] == 255) {
+		while(s3m->orders[order] == 254 || s3m->orders[order] == 255 || order >= s3m->header.num_orders) {
 			if(s3m->orders[order] == 255) done = true;
 			++order;
 			if(order >= s3m->header.num_orders) {
@@ -491,18 +496,20 @@ struct S3MPlayer {
 		return done;
 	}
 
+	//TODO end-of-song detection in pattern jump
 	void tick_row() {
 		update_row();
 		
 		if(pattern_jump) {
-			set_order(pattern_jump) ? set_order(0) : 0;
+			if(set_order(pattern_jump)) {
+				set_order(0);
+			}
 			pattern_jump = 0;
 		} else {
 			++row;
 			if(row >= 64) {
 				row = 0;
-				++order;
-				if(set_order(order))
+				if(set_order(order+1))
 					++finished;
 			}
 		}
@@ -593,9 +600,9 @@ int main(int argc, char* argv[]) {
 	SDL_Init(SDL_INIT_AUDIO);
 	player.set_sample_rate(44100);
 
-	s3m.load("../SATELL.S3M");
+	//s3m.load("../SATELL.S3M");
 	//s3m.load("../aryx.s3m");
-	//s3m.load("../2ND_PM.S3M");
+	s3m.load("../2ND_PM.S3M");
 	//s3m.load("../pod.s3m");
 	//s3m.load("../CTGOBLIN.S3M");
 	//s3m.load("../ascent.s3m");
