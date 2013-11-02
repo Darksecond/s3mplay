@@ -14,6 +14,8 @@ if (APPLE)
 endif ()
 
 add_executable (s3mplay
+	s3mplayer.cc
+	s3mplayer.h
 	s3mfile.cc
 	s3mfile.h
 	s3mplay.cc
