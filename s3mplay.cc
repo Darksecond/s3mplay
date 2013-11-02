@@ -1,263 +1,14 @@
+#include "s3mfile.h"
+
 #include <SDL.h>
 #include <SDL_audio.h>
 #include <cmath>
-#include <stdio.h>
+#include <cstdio>
 #include <cassert>
 #include <atomic>
 
-struct S3MFile {
-	struct {
-		char name[28];
-		uint8_t eofchar;
-		uint8_t type;
-		uint8_t dummy[2];
-		uint16_t num_orders;
-		uint16_t num_instruments;
-		uint16_t num_patterns;
-		uint16_t flags;
-		uint16_t version;
-		uint16_t ffi; //signed/unsigned samples
-		char scrm[4];
-		uint8_t global_volume; //Vxx
-		uint8_t initial_speed; //Axx
-		uint8_t initial_tempo; //Txx
-		uint8_t master_volume;
-		uint8_t uc; //ultraclick removal
-		uint8_t default_panning;
-		uint8_t dummy2[8];
-		uint16_t special;
-		uint8_t channel_settings[32];
-	} __attribute__((packed)) header;
-
-	uint8_t orders[256];
-
-	struct Instrument {
-		struct {
-			uint8_t type;
-			char filename[12];
-			struct {
-				uint8_t memseg[3];
-
-				uint32_t ptr() {
-					return (((uint32_t)memseg[0] << 16) + ((uint32_t)memseg[2] << 8) + (uint32_t)memseg[1]) * 16UL;
-				}
-			} memseg;
-			uint32_t length;
-			uint32_t loop_begin;
-			uint32_t loop_end;
-			uint8_t volume;
-			uint8_t dummy;
-			uint8_t pack_scheme;
-			uint8_t flags;
-			uint32_t c4spd;
-			uint8_t dummy2[12];
-			char sample_name[28];
-			uint8_t scrs[4];
-		} __attribute__((packed)) header;
-
-		uint8_t *sample_data;
-
-		Instrument() : sample_data(nullptr) {
-		}
-
-		~Instrument() {
-			if(sample_data)
-				delete [] sample_data;
-		}
-
-		void load(FILE* fp) {
-			fread(&header, sizeof(header), 1, fp);
-			
-			//Verify header
-			assert(memcmp(header.scrs,"SCRS",4)==0);
-
-			//Fix length if needed
-			if(header.length > 64000UL) header.length = 64000UL;
-
-			//If the sample loops, check loop values
-			if(header.flags & 1) { //1 == Sample loops
-				assert(header.loop_begin < header.length);
-				assert(header.loop_end <= header.length);
-			}
-
-			//Only PCM samples are supported
-			if(header.type == 1) {
-				//Load PCM sample data
-				fseek(fp, header.memseg.ptr(), SEEK_SET);
-				sample_data = new uint8_t[header.length];
-				fread(sample_data, 1, header.length, fp);
-			}
-		}
-	} instruments[99];
-
-	struct Pattern {
-		struct Row {
-			struct Slot {
-				uint8_t channel;
-				uint8_t note;
-				uint8_t instrument;
-				uint8_t volume;
-				uint8_t command;
-				uint8_t infobyte;
-
-				void load(uint8_t *&ptr) {
-					uint8_t byte = *ptr++;
-					channel = byte & 0x1F;
-					note = 255;
-					instrument = 0;
-					volume = 255;
-					command = 0;
-					infobyte = 0;
-					if(byte & 0x20) {
-						note = *ptr++;
-						instrument = *ptr++;
-					}
-					if(byte & 0x40) {
-						volume = *ptr++;
-					}
-					if(byte & 0x80) {
-						command = *ptr++;
-						infobyte = *ptr++;
-					}
-				}
-
-				void print() {
-					static const char notenames[] = "C-C#D-D#E-F-F#G-G#A-A#B-12131415";
-
-					printf("c%02u ",channel);
-
-					if(note == 255)
-						printf("...");
-					else if(note == 254)
-						printf("^^^");
-					else
-						printf("%.2s%u", notenames+2*(note&15), note>>4);
-
-					if(instrument)
-						printf(" %02u", instrument);
-					else
-						printf(" ..");
-
-					if(volume == 255)
-						printf(" ..");
-					else
-						printf(" %02u", volume);
-
-					if(command)
-						printf(" %c", command+64);
-					else
-						printf(" .");
-
-					printf("%02X", infobyte);
-				}
-
-				int base_note() {
-					return (note>>4)*12 + (note&0x0F);
-				}
-
-			} slots[32]; //maximum 32 channels, so a maximum of 32 slots per row
-
-			int num_slots;
-
-			void load(uint8_t *&ptr) {
-				num_slots = 0;
-				while(*ptr != 0) {
-					slots[num_slots].load(ptr);
-					++num_slots;
-				}
-
-				//Ignore end-of-row slot
-				Slot x;
-				x.load(ptr);
-			}
-
-			void print() {
-				if(num_slots == 0) {
-					printf("\n");
-					return;
-				}
-
-				for(int i=0;i<num_slots;++i) {
-					printf("|");
-					slots[i].print();
-				}
-				printf("|\n");
-			}
-
-			Slot* begin() {
-				return slots;
-			}
-
-			Slot* end() {
-				return slots + num_slots;
-			}
-		} rows[64]; //there are always 64 rows in a pattern
-
-		void load(FILE* fp) {
-			uint16_t length;
-			fread(&length, sizeof(uint16_t), 1, fp);
-			uint8_t *data = new uint8_t[length];
-			fread(data, 1, length, fp);
-			uint8_t *ptr = data;
-			for(int i=0;i<64;++i) {
-				rows[i].load(ptr);
-			}
-			delete [] data;
-		}
-
-		void print() {
-			for(int i=0;i<64;++i) {
-				rows[i].print();
-			}
-		}
-	} patterns[100];
-	
-	void load(const char* filename) {
-		FILE* fp = fopen(filename, "rb");
-		assert(fp);
-		setbuf(fp, NULL);
-		fread(&header, sizeof(header), 1, fp);
-
-		//Verify header
-		assert(header.eofchar == 0x1A);
-		assert(header.type == 16);
-		assert(memcmp(header.scrm,"SCRM",4)==0);
-		assert(header.num_orders <= 256);
-		assert(header.num_instruments <= 99);
-		assert(header.num_patterns <= 100);
-
-		//Load orders
-		memset(orders, 255, sizeof(orders));
-		fread(orders, 1, header.num_orders, fp);
-
-		//Load instrument & pattern pointers
-		uint16_t ins_ptrs[99];
-		fread(ins_ptrs, sizeof(uint16_t), header.num_instruments, fp);
-		uint16_t pat_ptrs[100];
-		fread(pat_ptrs, sizeof(uint16_t), header.num_patterns, fp);
-
-		//Load instruments
-		for(int i=0;i<header.num_instruments; ++i) {
-			auto& inst = instruments[i];
-			fseek(fp, ins_ptrs[i]*16UL, SEEK_SET);
-			inst.load(fp);
-		}
-
-		//Load patterns
-		for(int i=0;i<header.num_patterns; ++i) {
-			if(pat_ptrs[i]) {
-				auto& pat = patterns[i];
-				fseek(fp, pat_ptrs[i]*16UL, SEEK_SET);
-				pat.load(fp);
-			}
-		}
-
-		fclose(fp);
-	}
-};
-
 struct S3MPlayer {
-	S3MFile* s3m; //s3m file to play
+	S3M::File* s3m; //s3m file to play
 	std::atomic<int> finished; //how many times has player looped through the song? i.e. 0==not done playing yet, >0==done playing, at least once
 	int sample_rate; //Sample rate in Hz
 	int tick_length; //length of a tick in samples
@@ -303,7 +54,7 @@ struct S3MPlayer {
 		sample_rate = sr;
 	}
 
-	void load(S3MFile* file) {
+	void load(S3M::File* file) {
 		s3m = file;
 		reset();
 	}
@@ -331,7 +82,7 @@ struct S3MPlayer {
 		pattern = s3m->orders[order];
 	}
 
-	S3MFile::Pattern::Row& current_row() {
+	S3M::Row& current_row() {
 		return s3m->patterns[pattern].rows[row];
 	}
 
@@ -352,7 +103,7 @@ struct S3MPlayer {
 		return sample/128.0;
 	}
 
-	void note_on(S3MFile::Pattern::Row::Slot& slot) {
+	void note_on(S3M::Slot& slot) {
 		Channel& channel = channels[slot.channel];
 		if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
 			if(slot.note != 255 && slot.note != 254) {
@@ -404,7 +155,9 @@ struct S3MPlayer {
 	void update_row() {
 		printf("O%02uP%02uR%02u ",order,pattern,row);
 		current_row().print();
-		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
+		//We cache the current row, because row might change in this for loop. This way we don't suddenly switch over to another row.
+		S3M::Row& crow = current_row();
+		for(S3M::Slot& slot : crow) {
 			Channel& channel = channels[slot.channel];
 			channel.note_on = 0;
 			channel.note_off = 999;
@@ -418,6 +171,7 @@ struct S3MPlayer {
 					break;
 				case 'B': //Bxx, Pattern Jump
 					pattern_jump = slot.infobyte;
+					//We can change row here because we've cached the current row in row.
 					row = 0;
 					break;
 				case 'C': //Cxx, Pattern break
@@ -516,7 +270,7 @@ struct S3MPlayer {
 	}
 
 	void channel_tick() {
-		for(S3MFile::Pattern::Row::Slot& slot : current_row()) {
+		for(S3M::Slot& slot : current_row()) {
 			Channel& channel = channels[slot.channel];
 			if(channel.note_on == current_tick) note_on(slot);
 			if(channel.note_off == current_tick) channel.active = false;
@@ -569,7 +323,7 @@ struct S3MPlayer {
 	}
 };
 
-static S3MFile s3m;
+static S3M::File s3m;
 static S3MPlayer player;
 
 void audio_callback(void*, Uint8* s, int len) {
