@@ -11,7 +11,7 @@ class SDLOut {
 
 	static void callback(void* void_self, Uint8* s, int len) {
 		SDLOut* self = (SDLOut*)void_self;
-		self->_player->synth((float*)s, len/sizeof(float));
+		self->_player->synth_stereo((float*)s, len/sizeof(float));
 	}
 public:
 	void load(S3M::Player *player) {
@@ -27,7 +27,7 @@ public:
 		SDL_zero(want);
 		want.freq = 44100;
 		want.format = AUDIO_F32;
-		want.channels = 1;
+		want.channels = 2;
 		want.samples = 2048;
 		want.callback = callback;
 		want.userdata = this;

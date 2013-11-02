@@ -51,9 +51,9 @@ namespace S3M {
 		uint8_t infobyte;
 
 		void load(uint8_t *&ptr);
-		void print();
+		void print() const;
 
-		inline int base_note() {
+		inline int base_note() const {
 			return (note>>4)*12 + (note&0x0F);
 		}
 
@@ -65,13 +65,21 @@ namespace S3M {
 		int num_slots;
 
 		void load(uint8_t *&ptr);
-		void print();
+		void print() const;
 
 		inline Slot* begin() {
 			return slots;
 		}
 
+		inline const Slot* begin() const {
+			return slots;
+		}
+
 		inline Slot* end() {
+			return slots + num_slots;
+		}
+
+		inline const Slot* end() const {
 			return slots + num_slots;
 		}
 	};
@@ -109,6 +117,7 @@ namespace S3M {
 		uint8_t orders[256];
 		struct Instrument instruments[99];
 		struct Pattern patterns[100];
+		float panning[32];
 
 		void load(const char* filename);
 	};

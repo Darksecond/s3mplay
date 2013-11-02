@@ -1,7 +1,7 @@
 #include "s3mplayer.h"
 
 //TODO Proper end-of-song detection
-bool S3M::Cursor::set_order(int new_order, S3M::File *s3m) {
+bool S3M::Cursor::set_order(const int new_order, const S3M::File *s3m) {
 	bool done = false;
 	//if(new_order <= order) done = true; //is an option
 	order = new_order;
@@ -32,7 +32,7 @@ bool S3M::Cursor::apply(const Cursor& other) {
 }
 
 //TODO Proper end-of-song detection
-bool S3M::Cursor::next_row(S3M::File *s3m) {
+bool S3M::Cursor::next_row(const S3M::File *s3m) {
 	bool done = false;
 	++row;
 	if(row >= 64) {
@@ -63,4 +63,21 @@ void S3M::Channel::apply_portamento() {
 				period = slide_period;
 		}
 	}
+}
+
+double S3M::Channel::sample(const S3M::File *s3m, const int sample_rate) {
+	double sampler_add = (14317056.0 / sample_rate) / period;
+	auto& ins = s3m->instruments[instrument];
+
+	if(sample_offset >= ins.header.length) {
+		active = false;
+		return 0;
+	}
+
+	double sample = ins.sample_data[(unsigned)sample_offset] - 128.0; 
+	sample_offset += sampler_add;
+	if((ins.header.flags & 1) && sample_offset >= ins.header.loop_end) /* loop? */
+		sample_offset = ins.header.loop_begin + fmod(sample_offset - ins.header.loop_begin, ins.header.loop_end - ins.header.loop_begin);
+
+	return (sample/128.0) * (volume/64.0);
 }

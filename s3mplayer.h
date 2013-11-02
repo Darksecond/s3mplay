@@ -18,18 +18,18 @@ namespace S3M {
 	public:
 
 		//TODO Proper end-of-song detection
-		bool set_order(int new_order, File *s3m);
+		bool set_order(const int new_order, const File *s3m);
 
-		inline bool next_order(File *s3m) {
-			return set_order(order+1,s3m);
+		inline bool next_order(const Cursor& cursor, const File *s3m) {
+			return set_order(cursor.order+1,s3m);
 		}
 
-		inline void set_row(int new_row) {
+		inline void set_row(const int new_row) {
 			assert(new_row < 64 && new_row >= 0);
 			row = new_row;
 		}
 
-		inline void reset(File *s3m) {
+		inline void reset(const File *s3m) {
 			set_row(0);
 			set_order(0, s3m);
 		}
@@ -39,7 +39,12 @@ namespace S3M {
 			return s3m->patterns[pattern].rows[row];
 		}
 
-		inline void print() {
+		inline const Row& current_row(const File *s3m) {
+			assert(row != invalid && order != invalid && pattern != invalid);
+			return s3m->patterns[pattern].rows[row];
+		}
+
+		inline void print() const {
 			printf("O%02uP%02uR%02u ",order,pattern,row);
 		}
 
@@ -52,9 +57,9 @@ namespace S3M {
 		}
 
 		//TODO Proper end-of-song detection
-		bool next_row(File *s3m);
+		bool next_row(const File *s3m);
 
-		inline bool order_invalid() {
+		inline bool order_invalid() const {
 			return order == invalid;
 		}
 	};
@@ -78,16 +83,29 @@ namespace S3M {
 
 		int new_sample_offset;
 
+		float pan; //0.0 == left, 1.0 == right
+
 		Channel() : active(false), instrument(0), base_note(-1), period(0), slide_period(0), sample_offset(0), volume(64), note_on(0), note_off(999)
-			    , volume_slide(0), last_volume_slide(0), portamento(0), last_portamento(0), new_sample_offset(0) {
+			    , volume_slide(0), last_volume_slide(0), portamento(0), last_portamento(0), new_sample_offset(0), pan(0.5) {
 			    }
 
 		void apply_volume_slide();
 		void apply_portamento();
+		double sample(const File *s3m, const int sample_rate);
+		
+		inline void mono(const File *s3m, const int sample_rate, double& middle) {
+			middle += sample(s3m,sample_rate);
+		}
+
+		inline void stereo(const File *s3m, const int sample_rate, double& left, double& right) {
+			double s = sample(s3m,sample_rate);
+			left += s*(1.0-pan);
+			right += s*pan;
+		}
 	};
 
 	class Player {
-		File* s3m; //s3m file to play
+		const File* s3m; //s3m file to play
 		std::atomic<int> finished; //how many times has player looped through the song? i.e. 0==not done playing yet, >0==done playing, at least once
 		int sample_rate; //Sample rate in Hz
 		int tick_length; //length of a tick in samples
@@ -100,59 +118,13 @@ namespace S3M {
 		Cursor jump_cursor; //order,pattern,row to jump to
 
 		struct Channel channels[32];
-	public:
 
-		Player() : s3m(nullptr), sample_rate(0) {
-		}
-
-		void set_sample_rate(int sr) {
-			sample_rate = sr;
-		}
-
-		void load(File* file) {
-			s3m = file;
-			reset();
-		}
-
-		void set_tempo(int new_tempo) {
+		inline void set_tempo(const int new_tempo) {
 			tempo = new_tempo;
 			tick_length = 2.5 * sample_rate / tempo;
 		}
 
-		void reset() {
-			assert(s3m);
-			assert(sample_rate);
-
-			set_tempo(s3m->header.initial_tempo);
-			speed = s3m->header.initial_speed;
-			global_volume = s3m->header.global_volume;
-
-			finished = 0;
-			tick_offset = 0;
-			current_tick = speed;
-
-			jump_cursor.invalidate();
-			cursor.reset(s3m);
-		}
-
-		double resample(Channel& channel) {
-			double sampler_add = (14317056.0 / sample_rate) / channel.period;
-			auto& ins = s3m->instruments[channel.instrument];
-
-			if(channel.sample_offset >= ins.header.length) {
-				channel.active = false;
-				return 0;
-			}
-
-			double sample = ins.sample_data[(unsigned)channel.sample_offset] - 128.0; 
-			channel.sample_offset += sampler_add;
-			if((ins.header.flags & 1) && channel.sample_offset >= ins.header.loop_end) /* loop? */
-				channel.sample_offset = ins.header.loop_begin + fmod(channel.sample_offset - ins.header.loop_begin, ins.header.loop_end - ins.header.loop_begin);
-
-			return sample/128.0;
-		}
-
-		void note_on(Slot& slot) {
+		inline void note_on(const Slot& slot) {
 			Channel& channel = channels[slot.channel];
 			if((slot.note != 255 && slot.note != 254) || slot.instrument != 0) {
 				if(slot.note != 255 && slot.note != 254) {
@@ -178,11 +150,11 @@ namespace S3M {
 		}
 
 
-		void update_row() {
+		inline void update_row() {
 			cursor.print();
-			Row& crow = cursor.current_row(s3m);
+			const Row& crow = cursor.current_row(s3m);
 			crow.print();
-			for(Slot& slot : crow) {
+			for(const Slot& slot : crow) {
 				Channel& channel = channels[slot.channel];
 				channel.note_on = 0;
 				channel.note_off = 999;
@@ -200,7 +172,7 @@ namespace S3M {
 						break;
 					case 'C': //Cxx, Pattern break
 						if(jump_cursor.order_invalid()) {
-							jump_cursor.next_order(s3m);
+							jump_cursor.next_order(cursor, s3m);
 						}
 						jump_cursor.set_row((slot.infobyte >> 4)*10 + (slot.infobyte & 15));
 						break;
@@ -221,8 +193,8 @@ namespace S3M {
 						break;
 					case 'D': //Dxy, Volume slide
 						if(slot.infobyte) { //xy != 0x00
-							int x = (slot.infobyte & 0xF0)>>4;
-							int y = slot.infobyte & 0x0F;
+							const int x = (slot.infobyte & 0xF0)>>4;
+							const int y = slot.infobyte & 0x0F;
 							if(x>0)
 								channel.last_volume_slide = x;
 							else if(y>0)
@@ -239,6 +211,9 @@ namespace S3M {
 					case 'S': //Special
 						switch(slot.infobyte & 0xF0)
 						{
+							case '0x80': //S8x, Pan position
+								channel.pan = (slot.infobyte & 0x0F) / 16.0;
+								break;
 							case '0xC0': //Notecut
 								channel.note_off = slot.infobyte & 0x0F;
 								break;
@@ -258,7 +233,7 @@ namespace S3M {
 		}
 
 		//TODO end-of-song detection in pattern jump
-		void tick_row() {
+		inline void tick_row() {
 			update_row();
 
 			if(cursor.apply(jump_cursor)) {
@@ -269,8 +244,8 @@ namespace S3M {
 			}
 		}
 
-		void channel_tick() {
-			for(Slot& slot : cursor.current_row(s3m)) {
+		inline void channel_tick() {
+			for(const Slot& slot : cursor.current_row(s3m)) {
 				Channel& channel = channels[slot.channel];
 				if(channel.note_on == current_tick) note_on(slot);
 				if(channel.note_off == current_tick) channel.active = false;
@@ -280,7 +255,7 @@ namespace S3M {
 			}
 		}
 
-		void tick() {
+		inline void tick() {
 			++current_tick;
 			if(current_tick >= speed) {
 				current_tick = 0;
@@ -289,8 +264,40 @@ namespace S3M {
 				channel_tick();
 			}
 		}
+	public:
+		Player() : s3m(nullptr), sample_rate(0) {
+		}
 
-		void synth(float* buffer, int samples) {
+		inline void set_sample_rate(const int sr) {
+			sample_rate = sr;
+		}
+
+		inline void load(const File* file) {
+			s3m = file;
+			reset();
+		}
+
+		void reset() {
+			assert(s3m);
+			assert(sample_rate);
+
+			set_tempo(s3m->header.initial_tempo);
+			speed = s3m->header.initial_speed;
+			global_volume = s3m->header.global_volume;
+
+			finished = 0;
+			tick_offset = 0;
+			current_tick = speed;
+
+			jump_cursor.invalidate();
+			cursor.reset(s3m);
+
+			for(int i=0;i<32;++i) {
+				channels[i].pan = s3m->panning[i];
+			}
+		}
+
+		void synth_mono(float* buffer, int samples) {
 			memset(buffer, 0, samples*sizeof(float));
 
 			int offset = 0;
@@ -306,10 +313,10 @@ namespace S3M {
 					double sound = 0;
 					for(int c=0;c<32;++c) {
 						if(channels[c].active) {
-							sound += channels[c].volume * resample(channels[c]);
+							channels[c].mono(s3m,sample_rate,sound);
 						}
 					}
-					sound *= (s3m->header.master_volume & 127) * global_volume / (64.0*512.0*32.0); //32 channels, 512 == 2^7*2^8/64
+					sound *= (s3m->header.master_volume & 127) * global_volume / (512.0*32.0); //32 channels, 512 == 2^7*2^8/64
 					buffer[offset+i] = sound;
 				}
 				offset += remain;
@@ -317,12 +324,66 @@ namespace S3M {
 			}
 		}
 
-		void print() {
+		void synth_stereo(float* buffer, int samples) {
+			//Samples is the total amount of samples, so with 2 channels, 20 would be 10 samples per channel (interlaced)
+			memset(buffer, 0, samples*sizeof(float));
+			samples /= 2;
+
+			int offset = 0;
+			while(samples > 0) {
+				int remain = tick_length - tick_offset;
+				if(remain > samples) remain = samples;
+				tick_offset += remain;
+				if(tick_offset == tick_length) {
+					tick();
+					tick_offset = 0;
+				}
+				for(int i=0;i<remain*2;i+=2) {
+					double soundL = 0;
+					double soundR = 0;
+					for(int c=0;c<32;++c) {
+						if(channels[c].active) {
+							channels[c].stereo(s3m,sample_rate,soundL,soundR);
+						}
+					}
+					soundL *= (s3m->header.master_volume & 127) * global_volume / (512.0*32.0); //32 channels, 512 == 2^7*2^8/64
+					soundR *= (s3m->header.master_volume & 127) * global_volume / (512.0*32.0); //32 channels, 512 == 2^7*2^8/64
+					buffer[offset*2+i] = soundL;
+					buffer[offset*2+i+1] = soundR;
+				}
+				offset += remain;
+				samples -= remain;
+			}
+		}
+
+		void print() const {
 			printf("Song: %s\n",s3m->header.name);
+
+			/*
+			printf("Orders: |");
+			for(int i=0;i<s3m->header.num_orders;++i) {
+				printf("%3i|",i);
+			}
+			printf("\n");
+			printf("        |");
+			for(int i=0;i<s3m->header.num_orders;++i) {
+				printf("%3i|",s3m->orders[i]);
+			}
+			printf("\n");
+			*/
+
+			printf("Pans: |");
+			for(int i=0;i<32;++i) {
+				printf("%.02f|",s3m->panning[i]);
+			}
+			printf("\n");
+
+			printf("Master volume: %i",s3m->header.master_volume);
+
 			printf("\n");
 		}
 
-		bool is_finished() {
+		bool is_finished() const {
 			return finished;
 		}
 	};

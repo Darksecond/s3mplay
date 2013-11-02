@@ -48,7 +48,7 @@ void S3M::Slot::load(uint8_t *&ptr) {
 	}
 }
 
-void S3M::Slot::print() {
+void S3M::Slot::print() const {
 	static const char notenames[] = "C-C#D-D#E-F-F#G-G#A-A#B-12131415";
 
 	printf("c%02u ",channel);
@@ -91,7 +91,7 @@ void S3M::Row::load(uint8_t *&ptr) {
 	x.load(ptr);
 }
 
-void S3M::Row::print() {
+void S3M::Row::print() const {
 	if(num_slots == 0) {
 		printf("\n");
 		return;
@@ -139,6 +139,41 @@ void S3M::File::load(const char* filename) {
 	fread(ins_ptrs, sizeof(uint16_t), header.num_instruments, fp);
 	uint16_t pat_ptrs[100];
 	fread(pat_ptrs, sizeof(uint16_t), header.num_patterns, fp);
+
+	//Panning information
+
+	//Center channel by default
+	for(int i=0;i<32;++i) {
+		panning[i] = 0.5;
+	}
+
+	for(int i=0;i<32;++i) {
+		if(header.channel_settings[i]<16) { //channel is enabled
+			if(header.channel_settings[i]<8) { //left oriented
+				panning[i] = 0.25;
+			} else { //right oriented
+				panning[i] = 0.75;
+			}
+		}
+	}
+
+	//If we have panning information, use it
+	if(header.default_panning == 0xFC) {
+		uint8_t pan[32];
+		fread(pan, sizeof(uint8_t), 32, fp);
+		for(int i=0;i<32;++i) {
+			if(pan[i] & 0x20) { //pan specified
+				panning[i] = (pan[i] & 0x0F) / 16.0;
+			}
+		}
+	}
+
+	//Track is in mono
+	if((header.master_volume & 0x80) == 0) {
+		for(int i=0;i<32;++i) {
+			panning[i] = 0.5;
+		}
+	}
 
 	//Load instruments
 	for(int i=0;i<header.num_instruments; ++i) {
